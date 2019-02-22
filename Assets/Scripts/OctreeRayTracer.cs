@@ -11,10 +11,14 @@ public class OctreeRayTracer : MonoBehaviour
 	public Transform Camera;
 	public int MinTrisPerOctant = 1;
 	public bool Deepen;
+	public float fov;
+	public int width;
+	public int height;
 	private Octree o;
 	private Mesh mesh;
 	private static int[] tris;
 	private static Vector3[] verts;
+	private static Vector3[] normals;
 	private static Transform thisTransform;
 
 	private UnityEngine.Random.State randState;
@@ -25,6 +29,7 @@ public class OctreeRayTracer : MonoBehaviour
 		mesh = GetComponent<MeshFilter>().mesh;
 		tris = mesh.triangles;
 		verts = mesh.vertices;
+		normals = mesh.normals;
 		Vector3 corner1 = verts[0];
 		Vector3 corner2 = verts[0];
 		foreach (Vector3 vert in verts) {
@@ -359,7 +364,8 @@ public class OctreeRayTracer : MonoBehaviour
 			}
 		}
 
-		private void FindRayIntersections(Vector3 closeUV, Vector3 farUV, int closeSide, Ray r, ref float dist, ref HashSet<int> checkedTris) {
+		private bool FindRayIntersections(Vector3 closeUV, Vector3 farUV, int closeSide, Ray r, ref HashSet<int> checkedTris, out Hit hit) {
+			hit = null;
 			if (children != null) {
 				float xDiv = (1 - 2 * closeUV.x) / (2 * farUV.x - 2 * closeUV.x);
 				float yDiv = (1 - 2 * closeUV.y) / (2 * farUV.y - 2 * closeUV.y);
@@ -456,51 +462,53 @@ public class OctreeRayTracer : MonoBehaviour
 							}
 							break;
 					}
-					curr.FindRayIntersections(currCloseUV, currFarUV, currSide, r, ref dist, ref checkedTris);
+					curr.FindRayIntersections(currCloseUV, currFarUV, currSide, r, ref checkedTris, out Hit newHit);
+					if (newHit != null) {
+						if (hit == null || newHit.dist < hit.dist) {
+							hit = newHit;
+						}
+						Vector3 nextClosePt = curr.box.Bounds[0] + Vector3.Scale(currCloseUV, curr.box.Extents);
+						if ((nextClosePt - r.Start).magnitude > hit.dist) return true; //Next octant is further than nearest found triangle
+					}
 					currSide = nextSide;
 					curr = next;
 					currCloseUV = nextCloseUV;
-					if (dist != 0) {
-						Vector3 nextClosePt = curr.box.Bounds[0] + Vector3.Scale(currCloseUV, curr.box.Extents);
-						if ((nextClosePt - r.Start).magnitude > dist) return; //Next octant is further than nearest found triangle
-					}
-					
+
 				}
 				farUV = new Vector3(
 					farUV.x < 0.5f ? 2 * farUV.x : 2 * farUV.x - 1,
 					farUV.y < 0.5f ? 2 * farUV.y : 2 * farUV.y - 1,
 					farUV.z < 0.5f ? 2 * farUV.z : 2 * farUV.z - 1
 				);
-				curr.FindRayIntersections(currCloseUV, farUV, currSide, r, ref dist, ref checkedTris);
+				if (curr.FindRayIntersections(currCloseUV, farUV, currSide, r, ref checkedTris, out Hit newHit2)) {
+					if (hit == null || newHit2.dist < hit.dist) {
+						hit = newHit2;
+					}
+				}
 			} else if (triIndices.Count > 0){
 				Vector3 start = box.Bounds[0] + Vector3.Scale(closeUV, box.Extents);
 				Vector3 end = box.Bounds[0] + Vector3.Scale(farUV, box.Extents);
-				Debug.DrawLine(thisTransform.TransformPoint(start), thisTransform.TransformPoint(end), Color.red);
-				Draw(Color.green);
 				foreach (int tri in triIndices) {
 					if (!checkedTris.Contains(tri)) {
-						Vector3 A = verts[tris[3 * tri + 0]];
-						Vector3 B = verts[tris[3 * tri + 1]];
-						Vector3 C = verts[tris[3 * tri + 2]];
-						if (r.IntersectTriangle(tri, out Hit hit)) {
-							if (dist == 0 || hit.dist < dist) dist = hit.dist;
-							Debug.DrawLine(thisTransform.TransformPoint(A), thisTransform.TransformPoint(B), Color.red);
-							Debug.DrawLine(thisTransform.TransformPoint(C), thisTransform.TransformPoint(B), Color.red);
-							Debug.DrawLine(thisTransform.TransformPoint(A), thisTransform.TransformPoint(C), Color.red);
+						if (r.IntersectTriangle(tri, out Hit newHit)) {
+							if (hit == null || newHit.dist < hit.dist) {
+								hit = newHit;
+							}
 						}
 						checkedTris.Add(tri);
 					}
 				}
 			}
+			return hit != null;
 		}
 
-		public void RayTrace(Ray r) {
+		public bool RayTrace(Ray r, out Hit hit) {
 			Vector2 d = new Vector2();
 			int closeSide = 0, farSide = 0;
-			Debug.DrawRay(
-				thisTransform.TransformPoint(r.Start),
-				thisTransform.TransformDirection(r.Dir)*100,
-				new Color(1, 1, 1, 0.5f));
+			//Debug.DrawRay(
+			//	thisTransform.TransformPoint(r.Start),
+			//	thisTransform.TransformDirection(r.Dir)*100,
+			//	new Color(1, 1, 1, 0.5f));
 			if (box.Intersect(r, ref d, ref closeSide, ref farSide)) {
 				Vector3 u1 = r.Start + d[0] * r.Dir - box.Bounds[0];
 				u1 = new Vector3(
@@ -515,8 +523,10 @@ public class OctreeRayTracer : MonoBehaviour
 					u2.z / box.Extents.z
 				);
 				var checkedTris = new HashSet<int>();
-				float dist = 0;
-				FindRayIntersections(u1, u2, closeSide, r, ref dist, ref checkedTris);
+				return FindRayIntersections(u1, u2, closeSide, r, ref checkedTris, out hit);
+			} else {
+				hit = null;
+				return false;
 			}
 		}
 
@@ -776,11 +786,41 @@ public class OctreeRayTracer : MonoBehaviour
     void Update()
     {
 		UnityEngine.Random.state = randState;
-		Ray r = new Ray(transform.InverseTransformPoint(Camera.position), transform.InverseTransformDirection(Camera.forward));
+		
 		if (Deepen) {
 			Deepen = false;
 			o.Deepen(MinTrisPerOctant);
 		}
-		o.RayTrace(r);
-    }
+		Ray r = new Ray(transform.InverseTransformPoint(Camera.position), transform.InverseTransformDirection(Camera.forward));
+		if (o.RayTrace(r, out Hit hit)) {
+			Debug.DrawLine(transform.TransformPoint(r.Start), transform.TransformPoint(hit.pt));
+			Vector3 A = transform.TransformPoint(verts[tris[3 * hit.triIndex + 0]]);
+			Vector3 B = transform.TransformPoint(verts[tris[3 * hit.triIndex + 1]]);
+			Vector3 C = transform.TransformPoint(verts[tris[3 * hit.triIndex + 2]]);
+
+			Vector3 Na = transform.TransformDirection(normals[tris[3 * hit.triIndex + 0]]);
+			Vector3 Nb = transform.TransformDirection(normals[tris[3 * hit.triIndex + 1]]);
+			Vector3 Nc = transform.TransformDirection(normals[tris[3 * hit.triIndex + 2]]);
+
+			Vector3 N = ((1f - hit.uv[0] - hit.uv[1]) * Na + hit.uv[0] * Nb + hit.uv[1] * Nc).normalized;
+			Debug.DrawRay(transform.TransformPoint(hit.pt), N, Color.blue);
+
+			Debug.DrawRay(A, Na, Color.cyan);
+			Debug.DrawRay(B, Nb, Color.cyan);
+			Debug.DrawRay(C, Nc, Color.cyan);
+		}
+		/*
+		float viewH = Mathf.Tan(Mathf.Deg2Rad*fov / 2) * 2;
+		for (int y=0; y<height; y++) {
+			for (int x=0; x<width; x++) {
+				Vector3 dir = (Camera.transform.forward + Camera.transform.right * viewH * (-0.5f + (float)x / (width-1)) * width/height + Camera.transform.up * viewH * (-0.5f + (float)y / (height-1))).normalized;
+				//Debug.DrawRay(Camera.transform.position, dir);
+				Ray r = new Ray(transform.InverseTransformPoint(Camera.position), transform.InverseTransformDirection(dir));
+				if (o.RayTrace(r, out Hit hit)) {
+					Debug.DrawLine(transform.TransformPoint(r.Start), transform.TransformPoint(hit.pt));
+				}
+			}
+		}
+		*/
+	}
 }
