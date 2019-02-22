@@ -20,6 +20,7 @@ public class OctreeRayTracer : MonoBehaviour
 	private static Vector3[] verts;
 	private static Vector3[] normals;
 	private static Transform thisTransform;
+	private bool canDeepen = true;
 
 	private UnityEngine.Random.State randState;
 
@@ -132,10 +133,8 @@ public class OctreeRayTracer : MonoBehaviour
 
 		public bool Intersect(Ray r, ref Vector2 d, ref int closeSide, ref int farSide) {
 			/* http://www.cs.utah.edu/~awilliam/box/box.pdf */
-			d = new Vector2(
-				(Bounds[r.sign[0]].x - r.Start.x) * r.Inv_dir.x,
-				(Bounds[1 - r.sign[0]].x - r.Start.x) * r.Inv_dir.x
-			);
+			d.x = (Bounds[r.sign[0]].x - r.Start.x) *r.Inv_dir.x;
+			d.y = (Bounds[1 - r.sign[0]].x - r.Start.x) *r.Inv_dir.x;
 			closeSide = 2 + r.sign[0];
 			farSide = 3 - r.sign[0];
 			float tymin = (Bounds[r.sign[1]].y - r.Start.y) * r.Inv_dir.y;
@@ -367,37 +366,118 @@ public class OctreeRayTracer : MonoBehaviour
 		private bool FindRayIntersections(Vector3 closeUV, Vector3 farUV, int closeSide, Ray r, ref HashSet<int> checkedTris, out Hit hit) {
 			hit = null;
 			if (children != null) {
-				float xDiv = (1 - 2 * closeUV.x) / (2 * farUV.x - 2 * closeUV.x);
-				float yDiv = (1 - 2 * closeUV.y) / (2 * farUV.y - 2 * closeUV.y);
-				float zDiv = (1 - 2 * closeUV.z) / (2 * farUV.z - 2 * closeUV.z);
-				var divs = new Dictionary<int, float>();
-				if (0 <= xDiv && xDiv <= 1) {
-					divs.Add(0, xDiv);
+				float[] divs = {
+					(1 - 2 * closeUV.x) / (2 * farUV.x - 2 * closeUV.x),
+					(1 - 2 * closeUV.y) / (2 * farUV.y - 2 * closeUV.y),
+					(1 - 2 * closeUV.z) / (2 * farUV.z - 2 * closeUV.z)
+				};
+				bool xValid = 0 <= divs[0] && divs[0] <= 1,
+					 yValid = 0 <= divs[1] && divs[1] <= 1,
+					 zValid = 0 <= divs[2] && divs[2] <= 1;
+				int[] divAxes = { -1, -1, -1 };
+				int divCount = 0;
+				if (xValid) {
+					divCount++;
+					if (yValid) {
+						divCount++;
+						bool xy = divs[0] < divs[1];
+						if (zValid) { // x && y && z
+							divCount++;
+							bool xz = divs[0] < divs[2];
+							bool yz = divs[1] < divs[2];
+							if (xy) { // x < y
+								if (xz) { // x < y && x < z
+									divAxes[0] = 0;
+									if (yz) { // x < y < z
+										divAxes[1] = 1;
+										divAxes[2] = 2;
+									} else { // x < z < y
+										divAxes[1] = 2;
+										divAxes[2] = 1;
+									}
+								} else { // z < x < y
+									divAxes[0] = 2;
+									divAxes[1] = 0;
+									divAxes[2] = 1;
+								}
+							} else { // y < x
+								if (xz) { // y < x < z
+									divAxes[0] = 1;
+									divAxes[1] = 0;
+									divAxes[2] = 2;
+								} else { // y < x && z < x
+									divAxes[2] = 0;
+									if (yz) { // y < z < x
+										divAxes[0] = 1;
+										divAxes[1] = 2;
+									} else { // z < y < x
+										divAxes[0] = 2;
+										divAxes[1] = 1;
+									}
+								}
+							}
+						} else { // x && y && !z
+							if (xy) { // x < y
+								divAxes[0] = 0;
+								divAxes[1] = 1;
+							} else { // y < x
+								divAxes[0] = 1;
+								divAxes[1] = 0;
+							}
+						}
+					} else {
+						if (zValid) { // x && !y && z
+							divCount++;
+							bool xz = divs[0] < divs[2];
+							if (xz) { // x < z
+								divAxes[0] = 0;
+								divAxes[1] = 2;
+							} else { // z < x
+								divAxes[0] = 2;
+								divAxes[1] = 0;
+							}
+						} else { // x && !y && !z
+							divAxes[0] = 0;
+						}
+					}
+				} else { 
+					if (yValid) {
+						divCount++;
+						if (zValid) { // !x && y && z
+							divCount++;
+							bool yz = divs[1] < divs[2];
+							if (yz) { // y < z
+								divAxes[0] = 1;
+								divAxes[1] = 2;
+							} else { // z < y
+								divAxes[0] = 2;
+								divAxes[1] = 1;
+							}
+						} else { // !x && y && !z
+							divAxes[0] = 1;
+						}
+					} else {
+						if (zValid) { // !x && !y && z
+							divCount++;
+							divAxes[0] = 2;
+						}
+					}
 				}
-				if (0 <= yDiv && yDiv <= 1) {
-					divs.Add(1, yDiv);
-				}
-				if (0 <= zDiv && zDiv <= 1) {
-					divs.Add(2, zDiv);
-				}
-				var divList = divs.ToList();
-				divList.Sort((pair1, pair2) => pair1.Value.CompareTo(pair2.Value));
 				Vector3 currCloseUV = closeUV;
 				int childIndex = GetChildIndex(closeSide, ref currCloseUV);
 				Octree curr = children[childIndex];
 				int currSide = closeSide;
-				foreach (var pair in divList) {
-					float div = pair.Value;
+				for(int i=0; i<divCount; i++) {
+					float div = divs[divAxes[i]];
+
 					Vector3 currFarUV = closeUV + div * (farUV - closeUV);
-					currFarUV = new Vector3(
-						currFarUV.x < 0.5f ? 2 * currFarUV.x : 2 * currFarUV.x - 1,
-						currFarUV.y < 0.5f ? 2 * currFarUV.y : 2 * currFarUV.y - 1,
-						currFarUV.z < 0.5f ? 2 * currFarUV.z : 2 * currFarUV.z - 1
-					);
+					currFarUV.x = currFarUV.x < 0.5f ? 2 * currFarUV.x : 2 * currFarUV.x - 1;
+					currFarUV.y = currFarUV.y < 0.5f ? 2 * currFarUV.y : 2 * currFarUV.y - 1;
+					currFarUV.z = currFarUV.z < 0.5f ? 2 * currFarUV.z : 2 * currFarUV.z - 1;
 					int nextSide;
 					Octree next;
 					Vector3 nextCloseUV;
-					switch (pair.Key) {
+					switch (divAxes[i]) { 
 						case 0: // x-axis
 							switch (childIndex) {
 								case 0:
@@ -475,11 +555,9 @@ public class OctreeRayTracer : MonoBehaviour
 					currCloseUV = nextCloseUV;
 
 				}
-				farUV = new Vector3(
-					farUV.x < 0.5f ? 2 * farUV.x : 2 * farUV.x - 1,
-					farUV.y < 0.5f ? 2 * farUV.y : 2 * farUV.y - 1,
-					farUV.z < 0.5f ? 2 * farUV.z : 2 * farUV.z - 1
-				);
+				farUV.x = farUV.x < 0.5f ? 2 * farUV.x : 2 * farUV.x - 1;
+				farUV.y = farUV.y < 0.5f ? 2 * farUV.y : 2 * farUV.y - 1;
+				farUV.z = farUV.z < 0.5f ? 2 * farUV.z : 2 * farUV.z - 1;
 				if (curr.FindRayIntersections(currCloseUV, farUV, currSide, r, ref checkedTris, out Hit newHit2)) {
 					if (hit == null || newHit2.dist < hit.dist) {
 						hit = newHit2;
@@ -505,23 +583,15 @@ public class OctreeRayTracer : MonoBehaviour
 		public bool RayTrace(Ray r, out Hit hit) {
 			Vector2 d = new Vector2();
 			int closeSide = 0, farSide = 0;
-			//Debug.DrawRay(
-			//	thisTransform.TransformPoint(r.Start),
-			//	thisTransform.TransformDirection(r.Dir)*100,
-			//	new Color(1, 1, 1, 0.5f));
 			if (box.Intersect(r, ref d, ref closeSide, ref farSide)) {
 				Vector3 u1 = r.Start + d[0] * r.Dir - box.Bounds[0];
-				u1 = new Vector3(
-					u1.x / box.Extents.x,
-					u1.y / box.Extents.y,
-					u1.z / box.Extents.z
-				);
+				u1.x /= box.Extents.x;
+				u1.y /= box.Extents.y;
+				u1.z /= box.Extents.z;
 				Vector3 u2 = r.Start + d[1] * r.Dir - box.Bounds[0];
-				u2 = new Vector3(
-					u2.x / box.Extents.x,
-					u2.y / box.Extents.y,
-					u2.z / box.Extents.z
-				);
+				u2.x /= box.Extents.x;
+				u2.y /= box.Extents.y;
+				u2.z /= box.Extents.z;
 				var checkedTris = new HashSet<int>();
 				return FindRayIntersections(u1, u2, closeSide, r, ref checkedTris, out hit);
 			} else {
@@ -530,7 +600,7 @@ public class OctreeRayTracer : MonoBehaviour
 			}
 		}
 
-		public void Deepen(int minTrisPerOctant) {
+		public bool Deepen(int minTrisPerOctant) {
 			if (children == null) {
 				if (triIndices.Count > minTrisPerOctant) {
 					Subdivide();
@@ -539,11 +609,15 @@ public class OctreeRayTracer : MonoBehaviour
 							children[i].AddTriangle(tri);
 						}
 					}
+					return true;
 				}
+				return false;
 			} else {
+				bool deepened = false;
 				for (int i = 0; i < 8; i++) {
-					children[i].Deepen(minTrisPerOctant);
+					deepened = children[i].Deepen(minTrisPerOctant) || deepened;
 				}
+				return deepened;
 			}
 		}
 
@@ -754,44 +828,18 @@ public class OctreeRayTracer : MonoBehaviour
 				}
 			}
 		}
-
-		public Octree this[float x, float y, float z] {
-			get {
-				if (children == null) {
-					return this;
-				}
-				if (x < 0 || 1 < x || y < 0 || 1 < y || z < 0 || 1 < z)
-					throw new IndexOutOfRangeException();
-				int index = 0;
-				if (x >= 0.5f) {
-					x -= 0.5f;
-					index += 4;
-				}
-				if (y >= 0.5f) {
-					y -= 0.5f;
-					index += 2;
-				}
-				if (z >= 0.5f) {
-					z -= 0.5f;
-					index += 1;
-				}
-				x *= 2;
-				y *= 2;
-				z *= 2;
-				return children[index][x, y, z];
-			}
-		}
 	}
 	
     void Update()
     {
 		UnityEngine.Random.state = randState;
 		
-		if (Deepen) {
+		if (Deepen && canDeepen) {
 			Deepen = false;
-			o.Deepen(MinTrisPerOctant);
+			canDeepen = o.Deepen(MinTrisPerOctant);
 		}
 		Ray r = new Ray(transform.InverseTransformPoint(Camera.position), transform.InverseTransformDirection(Camera.forward));
+		o.Draw(Color.white);
 		if (o.RayTrace(r, out Hit hit)) {
 			Debug.DrawLine(transform.TransformPoint(r.Start), transform.TransformPoint(hit.pt));
 			Vector3 A = transform.TransformPoint(verts[tris[3 * hit.triIndex + 0]]);
