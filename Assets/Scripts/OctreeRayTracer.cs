@@ -219,7 +219,7 @@ public class OctreeRayTracer : MonoBehaviour
 			depth = 0;
 			triIndices = new List<int>();
 			id = 0;
-			neighbors = new Octree[6];
+			neighbors = new Octree[6] { null, null, null, null, null, null };
 		}
 		private Octree(Box box, int depth, int id) {
 			this.box = box;
@@ -581,24 +581,107 @@ public class OctreeRayTracer : MonoBehaviour
 		}
 
 		public bool RayTrace(Ray r, out Hit hit) {
-			Vector2 d = new Vector2();
-			int closeSide = 0, farSide = 0;
-			if (box.Intersect(r, ref d, ref closeSide, ref farSide)) {
-				Vector3 u1 = r.Start + d[0] * r.Dir - box.Bounds[0];
-				u1.x /= box.Extents.x;
-				u1.y /= box.Extents.y;
-				u1.z /= box.Extents.z;
-				Vector3 u2 = r.Start + d[1] * r.Dir - box.Bounds[0];
-				u2.x /= box.Extents.x;
-				u2.y /= box.Extents.y;
-				u2.z /= box.Extents.z;
-				var checkedTris = new HashSet<int>();
-				return FindRayIntersections(u1, u2, closeSide, r, ref checkedTris, out hit);
-			} else {
-				hit = null;
-				return false;
-			}
-		}
+            Vector2 d = new Vector2();
+            int closeSide = 0, farSide = 0;
+            hit = null;
+            if (!box.Intersect(r, ref d, ref closeSide, ref farSide))
+            {
+                
+                return false;
+            }
+            Debug.DrawRay(thisTransform.TransformPoint(r.Start), thisTransform.TransformDirection(r.Dir) * 100);
+            Vector3 uv = r.Start + d[0] * r.Dir - box.Bounds[0];
+            uv.x /= box.Extents.x;
+            uv.y /= box.Extents.y;
+            uv.z /= box.Extents.z;
+            Debug.Log(uv);
+            Octree curr = this;
+            
+            while (curr != null)
+            {
+                while (curr.children != null)
+                {
+                    int childIndex = GetChildIndex(closeSide, ref uv);
+                    curr = curr.children[childIndex];
+                    Debug.Log(uv);
+                }
+                curr.Draw(Color.white);
+                Vector3 scaledDir = new Vector3(
+                    r.Dir.x / curr.box.Extents.x,
+                    r.Dir.y / curr.box.Extents.y,
+                    r.Dir.z / curr.box.Extents.z
+                );
+                Vector3 inv_dir = new Vector3(
+                    1f / scaledDir.x,
+                    1f / scaledDir.y,
+                    1f / scaledDir.z
+                );
+                int[] sign = new int[3]{
+                    inv_dir.x < 0 ? 1 : 0,
+                    inv_dir.y < 0 ? 1 : 0,
+                    inv_dir.z < 0 ? 1 : 0
+                };
+                float dx = (1 - sign[0] - uv.x) * inv_dir.x;
+                float dy = (1 - sign[1] - uv.y) * inv_dir.y;
+                float dz = (1 - sign[2] - uv.z) * inv_dir.z;
+                if (dx < dy)
+                {
+                    if (dx < dz)
+                    { /* dx < dz && dx < dy */
+                        uv += scaledDir * dx;
+                        farSide = 3 - sign[0];
+                    }
+                    else
+                    { /* dz <= dx < dy */
+                        uv += scaledDir * dz;
+                        farSide = 1 - sign[2];
+                    }
+                }
+                else
+                { /* dy <= dx */
+                    if (dy < dz)
+                    {
+                        uv += scaledDir * dy;
+                        farSide = 5 - sign[1];
+                    }
+                    else
+                    { /* dz <= dy <= dx */
+                        uv += scaledDir * dz;
+                        farSide = 1 - sign[2];
+                    }
+                }
+                closeSide = farSide - 2 * (farSide % 2) + 1;
+                uv = curr.box.Bounds[0] + Vector3.Scale(uv, curr.box.Extents);
+                curr = curr.neighbors[farSide];
+                if (curr != null)
+                {
+                    uv.x = (uv.x - curr.box.Bounds[0].x) / curr.box.Extents.x;
+                    uv.y = (uv.y - curr.box.Bounds[0].y) / curr.box.Extents.y;
+                    uv.y = (uv.z - curr.box.Bounds[0].z) / curr.box.Extents.z;
+                    Debug.Log("\t" + uv);
+                }
+            }
+            return false;
+            /*
+            Vector2 d = new Vector2();
+            int closeSide = 0, farSide = 0;
+            if (box.Intersect(r, ref d, ref closeSide, ref farSide)) {
+                Vector3 u1 = r.Start + d[0] * r.Dir - box.Bounds[0];
+                u1.x /= box.Extents.x;
+                u1.y /= box.Extents.y;
+                u1.z /= box.Extents.z;
+                Vector3 u2 = r.Start + d[1] * r.Dir - box.Bounds[0];
+                u2.x /= box.Extents.x;
+                u2.y /= box.Extents.y;
+                u2.z /= box.Extents.z;
+                var checkedTris = new HashSet<int>();
+                return FindRayIntersections(u1, u2, closeSide, r, ref checkedTris, out hit);
+            } else {
+                hit = null;
+                return false;
+            }
+            */
+         }
 
 		public bool Deepen(int minTrisPerOctant) {
 			if (children == null) {
@@ -839,7 +922,8 @@ public class OctreeRayTracer : MonoBehaviour
 			canDeepen = o.Deepen(MinTrisPerOctant);
 		}
 		Ray r = new Ray(transform.InverseTransformPoint(Camera.position), transform.InverseTransformDirection(Camera.forward));
-		o.Draw(Color.white);
+		o.Draw(new Color(0,0,0,0.5f));
+        /*
 		if (o.RayTrace(r, out Hit hit)) {
 			Debug.DrawLine(transform.TransformPoint(r.Start), transform.TransformPoint(hit.pt));
 			Vector3 A = transform.TransformPoint(verts[tris[3 * hit.triIndex + 0]]);
@@ -857,6 +941,7 @@ public class OctreeRayTracer : MonoBehaviour
 			Debug.DrawRay(B, Nb, Color.cyan);
 			Debug.DrawRay(C, Nc, Color.cyan);
 		}
+        */
 		/*
 		float viewH = Mathf.Tan(Mathf.Deg2Rad*fov / 2) * 2;
 		for (int y=0; y<height; y++) {
